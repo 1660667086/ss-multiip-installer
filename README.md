@@ -1,6 +1,6 @@
 # ss-multiip-installer
 
-单独仓库版：一键安装 Shadowsocks-libev + simple-obfs，并自动按服务器多 IP 生成同端口节点。
+单独仓库版：先调用原来的 `1660667086/123` 安装脚本安装 Shadowsocks-libev + simple-obfs，再自动按服务器多 IP 生成同端口节点。
 
 默认配置：
 
@@ -61,4 +61,4 @@ sudo ss-multiip
 
 ## 说明
 
-这个仓库不修改 `1660667086/123`。如果系统源无法安装 `shadowsocks-libev` 或 `simple-obfs`，请先用原来的 `ss-plugins-fixed` 安装基础环境，再运行本脚本做多 IP 配置。
+这个仓库不修改 `1660667086/123`。本脚本会在缺少 `ss-server` 或 `obfs-server` 时自动拉取并运行原来的安装脚本；原脚本安装完成后，本脚本继续写入 `ss-multiip` 并自动生成多 IP 服务。

@@ -11,6 +11,7 @@ NAMESERVER="${NAMESERVER:-8.8.8.8}"
 PLUGIN="${PLUGIN:-obfs-server}"
 PLUGIN_OPTS="${PLUGIN_OPTS:-obfs=http}"
 BIN_PATH="${BIN_PATH:-/usr/local/bin/ss-multiip}"
+UPSTREAM_INSTALL_URL="${UPSTREAM_INSTALL_URL:-https://raw.githubusercontent.com/1660667086/123/master/install-ss-plugins-fixed.sh}"
 
 need_root() {
   if [[ ${EUID} -ne 0 ]]; then
@@ -51,30 +52,23 @@ ensure_base_tools() {
 }
 
 ensure_shadowsocks_tools() {
-  if ! has_cmd ss-server; then
-    echo "未检测到 ss-server，尝试安装 shadowsocks-libev..."
-    install_packages shadowsocks-libev || true
+  if has_cmd ss-server && has_cmd obfs-server; then
+    return
   fi
 
-  if ! has_cmd obfs-server; then
-    echo "未检测到 obfs-server，尝试安装 simple-obfs..."
-    install_packages simple-obfs || install_packages simple-obfs-server || true
-  fi
+  echo "未检测到 ss-server 或 obfs-server，开始调用原 ss-plugins-fixed 安装脚本..."
+  cd /root
+  rm -rf /root/ss-plugins-fixed
+  rm -f install-ss-plugins-fixed.sh
+  curl -fL -o install-ss-plugins-fixed.sh "$UPSTREAM_INSTALL_URL"
+  chmod +x install-ss-plugins-fixed.sh
+  ./install-ss-plugins-fixed.sh
 
   if ! has_cmd ss-server || ! has_cmd obfs-server; then
     cat >&2 <<'MSG'
 
-缺少 ss-server 或 obfs-server，系统源自动安装失败。
-请先安装 Shadowsocks-libev 和 simple-obfs，例如先运行你原来的安装脚本：
-
-cd /root
-rm -rf /root/ss-plugins-fixed
-rm -f install-ss-plugins-fixed.sh
-curl -fL -o install-ss-plugins-fixed.sh https://raw.githubusercontent.com/1660667086/123/master/install-ss-plugins-fixed.sh
-chmod +x install-ss-plugins-fixed.sh
-./install-ss-plugins-fixed.sh
-
-安装完成后再运行本脚本。
+原安装脚本已结束，但仍缺少 ss-server 或 obfs-server。
+请确认安装菜单里已经选择 Shadowsocks-libev + simple-obfs，然后重新运行本脚本。
 MSG
     exit 1
   fi
