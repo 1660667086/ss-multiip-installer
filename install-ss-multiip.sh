@@ -24,31 +24,15 @@ has_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
-install_packages() {
-  local packages=("$@")
-  if has_cmd apt-get; then
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y "${packages[@]}"
-  elif has_cmd dnf; then
-    dnf install -y "${packages[@]}"
-  elif has_cmd yum; then
-    yum install -y "${packages[@]}"
-  else
-    echo "未找到 apt/dnf/yum，无法自动安装依赖: ${packages[*]}"
-    return 1
-  fi
-}
-
 ensure_base_tools() {
-  local missing=()
-  has_cmd curl || missing+=(curl)
-  has_cmd ip || missing+=(iproute2)
-  has_cmd python3 || missing+=(python3)
-
-  if [[ ${#missing[@]} -gt 0 ]]; then
-    echo "安装基础依赖: ${missing[*]}"
-    install_packages "${missing[@]}"
-  fi
+  local cmd
+  for cmd in curl ip python3; do
+    if ! has_cmd "$cmd"; then
+      echo "缺少基础命令: $cmd"
+      echo "请先安装后重新运行。"
+      exit 1
+    fi
+  done
 }
 
 ensure_shadowsocks_tools() {
