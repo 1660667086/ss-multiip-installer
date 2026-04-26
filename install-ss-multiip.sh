@@ -13,6 +13,11 @@ PLUGIN_OPTS="${PLUGIN_OPTS:-obfs=http}"
 BIN_PATH="${BIN_PATH:-/usr/local/bin/ss-multiip}"
 UPSTREAM_INSTALL_URL="${UPSTREAM_INSTALL_URL:-https://raw.githubusercontent.com/1660667086/123/master/install-ss-plugins-fixed.sh}"
 
+export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
+export APT_LISTCHANGES_FRONTEND="${APT_LISTCHANGES_FRONTEND:-none}"
+export NEEDRESTART_MODE="${NEEDRESTART_MODE:-a}"
+export NEEDRESTART_SUSPEND="${NEEDRESTART_SUSPEND:-1}"
+
 need_root() {
   if [[ ${EUID} -ne 0 ]]; then
     echo "请使用 root 运行."
@@ -33,6 +38,18 @@ ensure_base_tools() {
       exit 1
     fi
   done
+}
+
+prepare_noninteractive_apt() {
+  if has_cmd debconf-set-selections; then
+    printf 'iptables-persistent iptables-persistent/autosave_v4 boolean true\n' | debconf-set-selections || true
+    printf 'iptables-persistent iptables-persistent/autosave_v6 boolean true\n' | debconf-set-selections || true
+  fi
+
+  if has_cmd dpkg && dpkg --audit 2>/dev/null | grep -q .; then
+    echo "检测到 dpkg 上次未配置完成，正在修复..."
+    dpkg --configure -a
+  fi
 }
 
 ensure_shadowsocks_tools() {
@@ -278,6 +295,7 @@ SCRIPT
 main() {
   need_root
   ensure_base_tools
+  prepare_noninteractive_apt
   ensure_shadowsocks_tools
   write_base_config
   write_multiip_command

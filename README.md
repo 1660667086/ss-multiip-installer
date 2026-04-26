@@ -62,3 +62,5 @@ sudo ss-multiip
 ## 说明
 
 这个仓库不修改 `1660667086/123`，也不额外主动执行 `apt update/install`。本脚本会在缺少 `ss-server` 或 `obfs-server` 时自动拉取并运行原来的安装脚本，原安装脚本里的参数由你手动选择；原脚本安装完成后，本脚本继续写入 `ss-multiip` 并自动识别服务器 IP，生成多 IP 服务。
+
+脚本会预先设置非交互安装环境，并预配置 `iptables-persistent`，减少安装时卡在保存防火墙规则、`needrestart` 或未完成 `dpkg` 配置阶段的概率。
