@@ -62,7 +62,11 @@ ensure_shadowsocks_tools() {
   rm -f install-ss-plugins-fixed.sh
   curl -fL -o install-ss-plugins-fixed.sh "$UPSTREAM_INSTALL_URL"
   chmod +x install-ss-plugins-fixed.sh
-  ./install-ss-plugins-fixed.sh
+
+  # Feed the upstream menu non-interactively:
+  # install, ss-libev, random temporary port, password, default aes-128-gcm,
+  # install plugin, simple-obfs, default http, default obfs-host, start.
+  printf '2\n1\n\n%s\n\ny\n3\n\n\n\n' "$PASSWORD" | ./install-ss-plugins-fixed.sh
 
   if ! has_cmd ss-server || ! has_cmd obfs-server; then
     cat >&2 <<'MSG'
