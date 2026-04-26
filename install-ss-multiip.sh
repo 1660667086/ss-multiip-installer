@@ -79,8 +79,7 @@ write_base_config() {
 
   if [[ -f "$BASE_CONFIG" ]]; then
     cp -a "$BASE_CONFIG" "${BASE_CONFIG}.bak-$(date +%Y%m%d-%H%M%S)"
-    echo "已存在基础配置，已备份: $BASE_CONFIG"
-    return
+    echo "已存在基础配置，已备份并覆盖为多 IP 默认配置: $BASE_CONFIG"
   fi
 
   python3 - "$BASE_CONFIG" "$PORT" "$PASSWORD" "$METHOD" "$TIMEOUT" "$NAMESERVER" "$PLUGIN" "$PLUGIN_OPTS" <<'PY'
@@ -105,7 +104,7 @@ with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=4, ensure_ascii=False)
     f.write("\n")
 PY
-  echo "已创建基础配置: $BASE_CONFIG"
+  echo "已写入基础配置: $BASE_CONFIG"
 }
 
 write_multiip_command() {
