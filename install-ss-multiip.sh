@@ -23,6 +23,8 @@ export NEEDRESTART_MODE="${NEEDRESTART_MODE:-a}"
 export NEEDRESTART_SUSPEND="${NEEDRESTART_SUSPEND:-1}"
 APT_LOCK_WAIT_SECONDS="${APT_LOCK_WAIT_SECONDS:-900}"
 SYSTEMCTL_TIMEOUT_SECONDS="${SYSTEMCTL_TIMEOUT_SECONDS:-10}"
+APT_UPDATE_TIMEOUT_SECONDS="${APT_UPDATE_TIMEOUT_SECONDS:-240}"
+APT_REFRESHED=0
 
 need_root() {
   if [[ ${EUID} -ne 0 ]]; then
@@ -38,9 +40,9 @@ has_cmd() {
 install_packages() {
   if has_cmd apt-get; then
     if ! apt_candidates_available "$@"; then
-      apt-get update
+      apt_update_safe
     fi
-    apt-get install -y "$@"
+    apt-get -o Dpkg::Use-Pty=0 install -y "$@"
   elif has_cmd dnf; then
     dnf install -y "$@"
   elif has_cmd yum; then
@@ -48,6 +50,26 @@ install_packages() {
   else
     return 1
   fi
+}
+
+apt_update_safe() {
+  wait_for_apt_locks
+  if has_cmd timeout; then
+    timeout "${APT_UPDATE_TIMEOUT_SECONDS}" apt-get \
+      -o Dpkg::Use-Pty=0 \
+      -o APT::Color=0 \
+      -o APT::Update::Post-Invoke-Success::= \
+      -o APT::Update::Post-Invoke::= \
+      update || return 1
+  else
+    apt-get \
+      -o Dpkg::Use-Pty=0 \
+      -o APT::Color=0 \
+      -o APT::Update::Post-Invoke-Success::= \
+      -o APT::Update::Post-Invoke::= \
+      update || return 1
+  fi
+  APT_REFRESHED=1
 }
 
 apt_package_has_candidate() {
@@ -96,7 +118,15 @@ read_prompt() {
 }
 
 fast_packages_available() {
-  apt_candidates_available shadowsocks-libev simple-obfs || return 1
+  if apt_candidates_available shadowsocks-libev simple-obfs; then
+    return 0
+  fi
+  if has_cmd apt-get && [[ "$APT_REFRESHED" != "1" ]]; then
+    echo "系统源暂未找到 shadowsocks-libev/simple-obfs，先刷新 apt 索引后重试..."
+    apt_update_safe || return 1
+    apt_candidates_available shadowsocks-libev simple-obfs || return 1
+  fi
+  return 1
 }
 
 fast_install_shadowsocks() {
@@ -186,6 +216,8 @@ has_supported_server() {
 }
 
 ensure_shadowsocks_tools() {
+  local use_upstream
+
   if has_supported_server; then
     return
   fi
@@ -195,15 +227,25 @@ ensure_shadowsocks_tools() {
   fi
 
   if [[ "$FORCE_UPSTREAM" != "1" && "$INSTALL_UPSTREAM" != "1" ]]; then
-    cat >&2 <<'MSG'
+    if [[ -r /dev/tty ]]; then
+      echo
+      echo "没有检测到已安装的 Shadowsocks 服务端，也无法从系统源快速补齐。"
+      read_prompt use_upstream "是否进入原 ss-plugins 安装菜单？(默认: y) [y/n]: " "y"
+      if [[ ! "${use_upstream:-y}" =~ ^[Yy]$ ]]; then
+        echo "已取消。"
+        exit 1
+      fi
+    else
+      cat >&2 <<'MSG'
 
 没有检测到 ss-server、ssservice 或 go-shadowsocks2，且系统源里没有可直接安装的 shadowsocks-libev/simple-obfs。
-多 IP 功能必须依赖其中一种 Shadowsocks 服务端。默认不再调用原安装脚本，避免进入大依赖/源码编译后卡住。
+多 IP 功能必须依赖其中一种 Shadowsocks 服务端。非交互运行时不会自动进入原安装脚本，避免进入大依赖/源码编译后卡住。
 
 你可以先确认系统源是否正常，或显式运行:
   INSTALL_UPSTREAM=1 ./install-ss-multiip.sh
 MSG
-    exit 1
+      exit 1
+    fi
   fi
 
   echo "未检测到 Shadowsocks 服务端，开始调用原 ss-plugins-fixed 安装脚本..."
