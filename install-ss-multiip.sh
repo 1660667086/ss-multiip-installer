@@ -13,6 +13,8 @@ PLUGIN_OPTS="${PLUGIN_OPTS:-obfs=http}"
 BIN_PATH="${BIN_PATH:-/usr/local/bin/ss-multiip}"
 UPSTREAM_INSTALL_URL="${UPSTREAM_INSTALL_URL:-https://raw.githubusercontent.com/1660667086/123/master/install-ss-plugins-fixed.sh}"
 FORCE_UPSTREAM="${FORCE_UPSTREAM:-0}"
+INSTALL_UPSTREAM="${INSTALL_UPSTREAM:-0}"
+SKIP_FAST_INSTALL="${SKIP_FAST_INSTALL:-0}"
 
 export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
 export APT_LISTCHANGES_FRONTEND="${APT_LISTCHANGES_FRONTEND:-none}"
@@ -34,7 +36,9 @@ has_cmd() {
 
 install_packages() {
   if has_cmd apt-get; then
-    apt-get update
+    if ! apt_candidates_available "$@"; then
+      apt-get update
+    fi
     apt-get install -y "$@"
   elif has_cmd dnf; then
     dnf install -y "$@"
@@ -43,6 +47,18 @@ install_packages() {
   else
     return 1
   fi
+}
+
+apt_package_has_candidate() {
+  apt-cache policy "$1" 2>/dev/null | awk '$1 == "Candidate:" { found=1; ok=($2 != "(none)") } END { exit !(found && ok) }'
+}
+
+apt_candidates_available() {
+  local pkg
+  has_cmd apt-cache || return 1
+  for pkg in "$@"; do
+    apt_package_has_candidate "$pkg" || return 1
+  done
 }
 
 ensure_base_tools() {
@@ -79,20 +95,15 @@ read_prompt() {
 }
 
 fast_packages_available() {
-  has_cmd apt-cache || return 1
-  apt-cache policy shadowsocks-libev 2>/dev/null | awk '$1 == "Candidate:" { found=1; ok=($2 != "(none)") } END { exit !(found && ok) }' || return 1
-  apt-cache policy simple-obfs 2>/dev/null | awk '$1 == "Candidate:" { found=1; ok=($2 != "(none)") } END { exit !(found && ok) }' || return 1
+  apt_candidates_available shadowsocks-libev simple-obfs || return 1
 }
 
 fast_install_shadowsocks() {
-  local use_fast
-
   [[ "$FORCE_UPSTREAM" == "1" ]] && return 1
+  [[ "$SKIP_FAST_INSTALL" == "1" ]] && return 1
   fast_packages_available || return 1
 
-  echo "检测到系统源可直接安装 shadowsocks-libev + simple-obfs。"
-  read_prompt use_fast "使用快速安装，跳过源码编译吗？(默认: y) [y/n]: " "y"
-  [[ "${use_fast:-y}" =~ ^[Nn]$ ]] && return 1
+  echo "检测到系统源可直接安装 shadowsocks-libev + simple-obfs，自动补齐多 IP 必需组件。"
 
   install_packages shadowsocks-libev simple-obfs pwgen
 
@@ -176,6 +187,18 @@ ensure_shadowsocks_tools() {
 
   if fast_install_shadowsocks && has_cmd ss-server && has_cmd obfs-server; then
     return
+  fi
+
+  if [[ "$FORCE_UPSTREAM" != "1" && "$INSTALL_UPSTREAM" != "1" ]]; then
+    cat >&2 <<'MSG'
+
+没有安装 ss-server 或 obfs-server，且系统源里没有可直接安装的 shadowsocks-libev/simple-obfs。
+多 IP 功能必须依赖这两个程序。默认不再调用原安装脚本，避免进入大依赖/源码编译后卡住。
+
+你可以先确认系统源是否正常，或显式运行:
+  INSTALL_UPSTREAM=1 ./install-ss-multiip.sh
+MSG
+    exit 1
   fi
 
   echo "未检测到 ss-server 或 obfs-server，开始调用原 ss-plugins-fixed 安装脚本..."
