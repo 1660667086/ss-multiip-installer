@@ -5,13 +5,14 @@ CONFIG_DIR="${CONFIG_DIR:-/etc/shadowsocks}"
 BASE_CONFIG="${BASE_CONFIG:-$CONFIG_DIR/config.json}"
 PORT="${PORT:-80}"
 PASSWORD="${PASSWORD:-1}"
-METHOD="${METHOD:-aes-128-gcm}"
+METHOD="${METHOD:-aes-256-gcm}"
 TIMEOUT="${TIMEOUT:-300}"
 NAMESERVER="${NAMESERVER:-8.8.8.8}"
 PLUGIN="${PLUGIN:-obfs-server}"
 PLUGIN_OPTS="${PLUGIN_OPTS:-obfs=http}"
 BIN_PATH="${BIN_PATH:-/usr/local/bin/ss-multiip}"
 UPSTREAM_INSTALL_URL="${UPSTREAM_INSTALL_URL:-https://raw.githubusercontent.com/1660667086/123/master/install-ss-plugins-fixed.sh}"
+FORCE_UPSTREAM="${FORCE_UPSTREAM:-0}"
 
 export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
 export APT_LISTCHANGES_FRONTEND="${APT_LISTCHANGES_FRONTEND:-none}"
@@ -30,6 +31,19 @@ has_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
+install_packages() {
+  if has_cmd apt-get; then
+    apt-get update
+    apt-get install -y "$@"
+  elif has_cmd dnf; then
+    dnf install -y "$@"
+  elif has_cmd yum; then
+    yum install -y "$@"
+  else
+    return 1
+  fi
+}
+
 ensure_base_tools() {
   local cmd
   for cmd in curl ip python3; do
@@ -39,6 +53,38 @@ ensure_base_tools() {
       exit 1
     fi
   done
+}
+
+prompt_value() {
+  local var_name="$1" prompt="$2" default_value="$3" value
+  read -r -p "${prompt} (默认: ${default_value}): " value
+  printf -v "$var_name" '%s' "${value:-$default_value}"
+}
+
+fast_packages_available() {
+  has_cmd apt-cache || return 1
+  apt-cache policy shadowsocks-libev 2>/dev/null | grep -q 'Candidate: [^(]' || return 1
+  apt-cache policy simple-obfs 2>/dev/null | grep -q 'Candidate: [^(]' || return 1
+}
+
+fast_install_shadowsocks() {
+  local use_fast
+
+  [[ "$FORCE_UPSTREAM" == "1" ]] && return 1
+  fast_packages_available || return 1
+
+  echo "检测到系统源可直接安装 shadowsocks-libev + simple-obfs。"
+  read -r -p "使用快速安装，跳过源码编译吗？(默认: y) [y/n]: " use_fast
+  [[ "${use_fast:-y}" =~ ^[Nn]$ ]] && return 1
+
+  install_packages shadowsocks-libev simple-obfs
+
+  prompt_value PORT "请输入最终监听端口" "$PORT"
+  prompt_value PASSWORD "请输入密码" "$PASSWORD"
+  prompt_value METHOD "请输入加密方式" "$METHOD"
+
+  PLUGIN="obfs-server"
+  prompt_value PLUGIN_OPTS "请输入服务端插件参数" "$PLUGIN_OPTS"
 }
 
 prepare_noninteractive_apt() {
@@ -103,6 +149,10 @@ ensure_shadowsocks_tools() {
     return
   fi
 
+  if fast_install_shadowsocks && has_cmd ss-server && has_cmd obfs-server; then
+    return
+  fi
+
   echo "未检测到 ss-server 或 obfs-server，开始调用原 ss-plugins-fixed 安装脚本..."
   cd /root
   rm -rf /root/ss-plugins-fixed
@@ -127,7 +177,7 @@ write_base_config() {
 
   if [[ -f "$BASE_CONFIG" ]]; then
     cp -a "$BASE_CONFIG" "${BASE_CONFIG}.bak-$(date +%Y%m%d-%H%M%S)"
-    echo "已存在基础配置，已备份并覆盖为多 IP 默认配置: $BASE_CONFIG"
+    echo "已存在基础配置，已备份并保留原密码/加密/插件参数: $BASE_CONFIG"
   fi
 
   python3 - "$BASE_CONFIG" "$PORT" "$PASSWORD" "$METHOD" "$TIMEOUT" "$NAMESERVER" "$PLUGIN" "$PLUGIN_OPTS" <<'PY'
@@ -135,18 +185,22 @@ import json
 import sys
 
 path, port, password, method, timeout, nameserver, plugin, plugin_opts = sys.argv[1:]
-data = {
-    "server": "0.0.0.0",
-    "server_port": int(port),
-    "password": password,
-    "timeout": int(timeout),
-    "method": method,
-    "ipv6_first": False,
-    "nameserver": nameserver,
-    "mode": "tcp_and_udp",
-    "plugin": plugin,
-    "plugin_opts": plugin_opts,
-}
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except FileNotFoundError:
+    data = {}
+
+data["server"] = "0.0.0.0"
+data["server_port"] = int(port)
+data.setdefault("password", password)
+data.setdefault("timeout", int(timeout))
+data.setdefault("method", method)
+data.setdefault("ipv6_first", False)
+data.setdefault("nameserver", nameserver)
+data.setdefault("mode", "tcp_and_udp")
+data.setdefault("plugin", plugin)
+data.setdefault("plugin_opts", plugin_opts)
 
 with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=4, ensure_ascii=False)
