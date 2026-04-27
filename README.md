@@ -72,6 +72,7 @@ sudo ss-multiip
 生成 /etc/systemd/system/ss-ipN.service
 停掉旧 ss-ip*.service
 停掉原 shadowsocks-libev/shadowsocks-rust/go-shadowsocks2 服务，避免占用 0.0.0.0:端口
+为每个节点创建独立运行用户和策略路由，让入口 IP 与出口 IP 对应
 启动新的多 IP 服务并设置开机自启
 ```
 

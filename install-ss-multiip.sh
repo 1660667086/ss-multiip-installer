@@ -422,19 +422,36 @@ run_one() {
 }
 
 json_make_config() {
-  local src="$1" dst="$2" bind_ip="$3" port="$4"
-  python3 - "$src" "$dst" "$bind_ip" "$port" <<'PY'
+  local src="$1" dst="$2" bind_ip="$3" port="$4" impl="$5"
+  python3 - "$src" "$dst" "$bind_ip" "$port" "$impl" <<'PY'
 import json
 import sys
 
-src, dst, bind_ip, port = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+src, dst, bind_ip, port, impl = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]), sys.argv[5]
 with open(src, "r", encoding="utf-8") as f:
     data = json.load(f)
 data["server"] = bind_ip
 data["server_port"] = port
+if impl == "ss-rust":
+    data["outbound_bind_addr"] = bind_ip
+else:
+    data.pop("outbound_bind_addr", None)
 with open(dst, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=4, ensure_ascii=False)
     f.write("\n")
+PY
+}
+
+network_for_addr() {
+  local iface="$1" bind_ip="$2"
+  local cidr
+  cidr="$(ip -o -4 addr show dev "$iface" scope global | awk -v ip="$bind_ip" '{split($4,a,"/"); if (a[1] == ip) print $4}' | head -n 1)"
+  [[ -n "$cidr" ]] || return 1
+  python3 - "$cidr" <<'PY'
+import ipaddress
+import sys
+
+print(ipaddress.ip_interface(sys.argv[1]).network)
 PY
 }
 
@@ -536,9 +553,84 @@ print_node_info() {
   echo
 }
 
+service_user() {
+  echo "ssip$1"
+}
+
+ensure_service_user() {
+  local user="$1" shell_path
+  if id -u "$user" >/dev/null 2>&1; then
+    getent group "$user" >/dev/null 2>&1 || groupadd --system "$user"
+    return
+  fi
+  shell_path="/usr/sbin/nologin"
+  [[ -x "$shell_path" ]] || shell_path="/sbin/nologin"
+  useradd --system --user-group --no-create-home --shell "$shell_path" "$user"
+}
+
+cleanup_iptables_rule() {
+  local user="$1" mark="$2"
+  while iptables -t mangle -D OUTPUT -m owner --uid-owner "$user" -j MARK --set-mark "$mark" 2>/dev/null; do
+    :
+  done
+}
+
+cleanup_policy_routes() {
+  local n user mark table
+  for n in $(seq 1 255); do
+    user="$(service_user "$n")"
+    mark=$((10000 + n))
+    table="$mark"
+    cleanup_iptables_rule "$user" "$mark"
+    while ip rule del fwmark "$mark" table "$table" 2>/dev/null; do
+      :
+    done
+    ip route flush table "$table" 2>/dev/null || true
+  done
+}
+
+setup_policy_route() {
+  local index="$1" iface="$2" bind_ip="$3" user="$4"
+  local mark table priority gateway network
+
+  mark=$((10000 + index))
+  table="$mark"
+  priority=$((20000 + index))
+  gateway="$(ip -4 route show default dev "$iface" 2>/dev/null | awk '{print $3; exit}')"
+  [[ -n "$gateway" ]] || gateway="$(ip -4 route show default 2>/dev/null | awk '{print $3; exit}')"
+  network="$(network_for_addr "$iface" "$bind_ip" || true)"
+
+  cleanup_iptables_rule "$user" "$mark"
+  while ip rule del fwmark "$mark" table "$table" 2>/dev/null; do
+    :
+  done
+  ip route flush table "$table" 2>/dev/null || true
+
+  if [[ -n "$network" ]]; then
+    ip route replace "$network" dev "$iface" src "$bind_ip" table "$table" 2>/dev/null || true
+  fi
+  if [[ -n "$gateway" ]]; then
+    ip route replace default via "$gateway" dev "$iface" src "$bind_ip" onlink table "$table"
+  else
+    ip route replace default dev "$iface" src "$bind_ip" table "$table"
+  fi
+  ip rule add fwmark "$mark" table "$table" priority "$priority"
+  iptables -t mangle -A OUTPUT -m owner --uid-owner "$user" -j MARK --set-mark "$mark"
+  ip route flush cache 2>/dev/null || true
+}
+
+self_path() {
+  case "$0" in
+    /*) readlink -f "$0" 2>/dev/null || echo "$0" ;;
+    */*) readlink -f "$0" 2>/dev/null || echo "$0" ;;
+    *) command -v "$0" 2>/dev/null || echo "/usr/local/bin/ss-multiip" ;;
+  esac
+}
+
 write_service() {
-  local index="$1" bind_ip="$2" public_ip="$3" config_file="$4" impl="$5"
-  local service_file="/etc/systemd/system/${SERVICE_PREFIX}${index}.service"
+  local index="$1" iface="$2" bind_ip="$3" public_ip="$4" config_file="$5" impl="$6" user="$7"
+  local service_file="/etc/systemd/system/${SERVICE_PREFIX}${index}.service" bin_path
+  bin_path="$(self_path)"
 
   cat > "$service_file" <<SERVICE
 [Unit]
@@ -548,7 +640,12 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$0 run-one ${impl} ${config_file} ${bind_ip}
+User=${user}
+Group=${user}
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+ExecStartPre=+${bin_path} setup-route ${index} ${iface} ${bind_ip} ${user}
+ExecStart=${bin_path} run-one ${impl} ${config_file} ${bind_ip}
 Restart=on-failure
 LimitNOFILE=51200
 
@@ -588,9 +685,15 @@ main() {
     shift
     run_one "$@"
   fi
+  if [[ "${1:-}" == "setup-route" ]]; then
+    shift
+    setup_policy_route "$@"
+    exit
+  fi
 
   [[ $EUID -eq 0 ]] || { echo "请使用 root 运行." >&2; exit 1; }
   need_cmd ip
+  need_cmd iptables
   need_cmd curl
   need_cmd python3
   [[ -f "$BASE_CONFIG" ]] || { echo "找不到基础配置: $BASE_CONFIG" >&2; exit 1; }
@@ -622,6 +725,7 @@ main() {
 
   systemctl stop "${SERVICE_PREFIX}"'*.service' 2>/dev/null || true
   systemctl disable "${SERVICE_PREFIX}"'*.service' 2>/dev/null || true
+  cleanup_policy_routes
   rm -f /etc/systemd/system/${SERVICE_PREFIX}[0-9]*.service
 
   systemctl stop shadowsocks-libev.service 2>/dev/null || true
@@ -629,7 +733,7 @@ main() {
   systemctl stop shadowsocks-rust.service go-shadowsocks2.service 2>/dev/null || true
   systemctl disable shadowsocks-rust.service go-shadowsocks2.service 2>/dev/null || true
 
-  local index=0 line iface bind_ip public_ip config_file seen_public=""
+  local index=0 line iface bind_ip public_ip config_file user seen_public=""
   local -a node_public_ips=() node_config_files=()
   for line in "${ADDRS[@]}"; do
     iface="${line%% *}"
@@ -650,11 +754,13 @@ main() {
     seen_public+=" $public_ip"
     index=$((index + 1))
     config_file="$CONFIG_DIR/config-ip${index}.json"
-    json_make_config "$BASE_CONFIG" "$config_file" "$bind_ip" "$PORT"
-    write_service "$index" "$bind_ip" "$public_ip" "$config_file" "$SERVER_IMPL"
+    user="$(service_user "$index")"
+    ensure_service_user "$user"
+    json_make_config "$BASE_CONFIG" "$config_file" "$bind_ip" "$PORT" "$SERVER_IMPL"
+    write_service "$index" "$iface" "$bind_ip" "$public_ip" "$config_file" "$SERVER_IMPL" "$user"
     node_public_ips+=("$public_ip")
     node_config_files+=("$config_file")
-    echo "  添加: ${public_ip}:${PORT} -> 本地 ${bind_ip}，配置 ${config_file}"
+    echo "  添加: ${public_ip}:${PORT} -> 本地 ${bind_ip}，出口绑定 ${bind_ip}，配置 ${config_file}"
   done
 
   if [[ $index -eq 0 ]]; then
