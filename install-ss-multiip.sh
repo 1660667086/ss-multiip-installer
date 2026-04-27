@@ -680,6 +680,22 @@ start_service() {
   systemctl_retry restart "$service"
 }
 
+wait_service_active() {
+  local service="$1" waited=0 state
+  while (( waited < 20 )); do
+    if systemctl is-active --quiet "$service"; then
+      return 0
+    fi
+    state="$(systemctl is-active "$service" 2>/dev/null || true)"
+    if [[ "$state" == "failed" ]]; then
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 1
+}
+
 main() {
   if [[ "${1:-}" == "run-one" ]]; then
     shift
@@ -771,12 +787,15 @@ main() {
   reload_systemd
   for n in $(seq 1 "$index"); do
     start_service "${SERVICE_PREFIX}${n}.service"
+    if ! wait_service_active "${SERVICE_PREFIX}${n}.service"; then
+      echo "${SERVICE_PREFIX}${n}.service 未在等待时间内进入 active，继续打印诊断信息。"
+    fi
   done
 
   echo
   echo "完成，共创建 $index 个节点:"
   for n in $(seq 1 "$index"); do
-    systemctl --no-pager --full status "${SERVICE_PREFIX}${n}.service" | sed -n '1,8p'
+    (systemctl --no-pager --full status "${SERVICE_PREFIX}${n}.service" || true) | sed -n '1,10p'
   done
 
   echo
