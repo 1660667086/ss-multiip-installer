@@ -49,6 +49,7 @@ APT::Get::Assume-Yes "true";
 Dpkg::Options {
   "--force-confdef";
   "--force-confold";
+  "--no-triggers";
 };
 APTCONF
   fi
