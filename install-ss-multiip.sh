@@ -58,8 +58,24 @@ ensure_base_tools() {
 
 prompt_value() {
   local var_name="$1" prompt="$2" default_value="$3" value
-  read -r -p "${prompt} (默认: ${default_value}): " value
+  read_prompt value "${prompt} (默认: ${default_value}): " "$default_value"
   printf -v "$var_name" '%s' "${value:-$default_value}"
+}
+
+read_prompt() {
+  local __var_name="$1" prompt="$2" default_value="$3" value
+
+  if [[ -r /dev/tty ]]; then
+    if read -r -p "$prompt" value </dev/tty; then
+      printf -v "$__var_name" '%s' "${value:-$default_value}"
+      return
+    fi
+  elif read -r -p "$prompt" value; then
+    printf -v "$__var_name" '%s' "${value:-$default_value}"
+    return
+  fi
+
+  printf -v "$__var_name" '%s' "$default_value"
 }
 
 fast_packages_available() {
@@ -75,10 +91,10 @@ fast_install_shadowsocks() {
   fast_packages_available || return 1
 
   echo "检测到系统源可直接安装 shadowsocks-libev + simple-obfs。"
-  read -r -p "使用快速安装，跳过源码编译吗？(默认: y) [y/n]: " use_fast
+  read_prompt use_fast "使用快速安装，跳过源码编译吗？(默认: y) [y/n]: " "y"
   [[ "${use_fast:-y}" =~ ^[Nn]$ ]] && return 1
 
-  install_packages shadowsocks-libev simple-obfs
+  install_packages shadowsocks-libev simple-obfs pwgen
 
   prompt_value PORT "请输入最终监听端口" "$PORT"
   prompt_value PASSWORD "请输入密码" "$PASSWORD"
