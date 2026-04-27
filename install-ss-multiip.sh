@@ -15,6 +15,7 @@ UPSTREAM_INSTALL_URL="${UPSTREAM_INSTALL_URL:-https://raw.githubusercontent.com/
 FORCE_UPSTREAM="${FORCE_UPSTREAM:-0}"
 INSTALL_UPSTREAM="${INSTALL_UPSTREAM:-0}"
 SKIP_FAST_INSTALL="${SKIP_FAST_INSTALL:-0}"
+SS_IMPL="${SS_IMPL:-auto}"
 
 export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
 export APT_LISTCHANGES_FRONTEND="${APT_LISTCHANGES_FRONTEND:-none}"
@@ -180,20 +181,24 @@ wait_for_apt_locks() {
   done
 }
 
+has_supported_server() {
+  has_cmd ss-server || has_cmd ssservice || has_cmd go-shadowsocks2
+}
+
 ensure_shadowsocks_tools() {
-  if has_cmd ss-server && has_cmd obfs-server; then
+  if has_supported_server; then
     return
   fi
 
-  if fast_install_shadowsocks && has_cmd ss-server && has_cmd obfs-server; then
+  if fast_install_shadowsocks && has_supported_server; then
     return
   fi
 
   if [[ "$FORCE_UPSTREAM" != "1" && "$INSTALL_UPSTREAM" != "1" ]]; then
     cat >&2 <<'MSG'
 
-没有安装 ss-server 或 obfs-server，且系统源里没有可直接安装的 shadowsocks-libev/simple-obfs。
-多 IP 功能必须依赖这两个程序。默认不再调用原安装脚本，避免进入大依赖/源码编译后卡住。
+没有检测到 ss-server、ssservice 或 go-shadowsocks2，且系统源里没有可直接安装的 shadowsocks-libev/simple-obfs。
+多 IP 功能必须依赖其中一种 Shadowsocks 服务端。默认不再调用原安装脚本，避免进入大依赖/源码编译后卡住。
 
 你可以先确认系统源是否正常，或显式运行:
   INSTALL_UPSTREAM=1 ./install-ss-multiip.sh
@@ -201,7 +206,7 @@ MSG
     exit 1
   fi
 
-  echo "未检测到 ss-server 或 obfs-server，开始调用原 ss-plugins-fixed 安装脚本..."
+  echo "未检测到 Shadowsocks 服务端，开始调用原 ss-plugins-fixed 安装脚本..."
   cd /root
   rm -rf /root/ss-plugins-fixed
   rm -f install-ss-plugins-fixed.sh
@@ -210,11 +215,11 @@ MSG
 
   ./install-ss-plugins-fixed.sh
 
-  if ! has_cmd ss-server || ! has_cmd obfs-server; then
+  if ! has_supported_server; then
     cat >&2 <<'MSG'
 
-原安装脚本已结束，但仍缺少 ss-server 或 obfs-server。
-请确认安装菜单里已经选择 Shadowsocks-libev + simple-obfs，然后重新运行本脚本。
+原安装脚本已结束，但仍缺少 ss-server、ssservice 或 go-shadowsocks2。
+请确认安装菜单里已经选择任意 Shadowsocks 版本，然后重新运行本脚本。
 MSG
     exit 1
   fi
@@ -236,8 +241,10 @@ path, port, password, method, timeout, nameserver, plugin, plugin_opts = sys.arg
 try:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
+    loaded = True
 except FileNotFoundError:
     data = {}
+    loaded = False
 
 data["server"] = "0.0.0.0"
 data["server_port"] = int(port)
@@ -247,8 +254,10 @@ data.setdefault("method", method)
 data.setdefault("ipv6_first", False)
 data.setdefault("nameserver", nameserver)
 data.setdefault("mode", "tcp_and_udp")
-data.setdefault("plugin", plugin)
-data.setdefault("plugin_opts", plugin_opts)
+if "plugin" in data or not loaded:
+    data.setdefault("plugin", plugin)
+if "plugin_opts" in data or not loaded:
+    data.setdefault("plugin_opts", plugin_opts)
 
 with open(path, "w", encoding="utf-8") as f:
     json.dump(data, f, indent=4, ensure_ascii=False)
@@ -266,7 +275,8 @@ CONFIG_DIR="${CONFIG_DIR:-/etc/shadowsocks}"
 BASE_CONFIG="${BASE_CONFIG:-$CONFIG_DIR/config.json}"
 SERVICE_PREFIX="${SERVICE_PREFIX:-ss-ip}"
 PORT="${PORT:-}"
-SS_SERVER="${SS_SERVER:-$(command -v ss-server || true)}"
+SS_IMPL="${SS_IMPL:-auto}"
+SS_BIN="${SS_BIN:-}"
 PUBLIC_IP_CHECK_URLS=(
   "https://api.ipify.org"
   "https://ifconfig.me/ip"
@@ -278,7 +288,8 @@ need_cmd() {
 }
 
 json_get() {
-  python3 - "$BASE_CONFIG" "$1" <<'PY'
+  local key="$1" path="${2:-$BASE_CONFIG}"
+  python3 - "$path" "$key" <<'PY'
 import json
 import sys
 
@@ -288,6 +299,84 @@ with open(path, "r", encoding="utf-8") as f:
 value = data.get(key, "")
 print(value if value is not None else "")
 PY
+}
+
+detect_impl() {
+  if [[ "$SS_IMPL" != "auto" ]]; then
+    echo "$SS_IMPL"
+    return
+  fi
+
+  if command -v pgrep >/dev/null 2>&1; then
+    pgrep -f 'ssservice( |$)' >/dev/null 2>&1 && { echo "ss-rust"; return; }
+    pgrep -f 'go-shadowsocks2( |$)' >/dev/null 2>&1 && { echo "go-ss2"; return; }
+    pgrep -f 'ss-server( |$)' >/dev/null 2>&1 && { echo "ss-libev"; return; }
+  fi
+
+  [[ -x /usr/local/bin/ssservice || -x /usr/bin/ssservice ]] && { echo "ss-rust"; return; }
+  [[ -x /usr/local/bin/go-shadowsocks2 || -x /usr/bin/go-shadowsocks2 ]] && { echo "go-ss2"; return; }
+  [[ -x /usr/local/bin/ss-server || -x /usr/bin/ss-server || -n "$(command -v ss-server || true)" ]] && { echo "ss-libev"; return; }
+  return 1
+}
+
+detect_bin() {
+  local impl="$1"
+  case "$impl" in
+    ss-libev) command -v ss-server || true ;;
+    ss-rust) command -v ssservice || true ;;
+    go-ss2) command -v go-shadowsocks2 || true ;;
+  esac
+}
+
+go_ss2_method() {
+  case "$1" in
+    aes-128-gcm) echo "AEAD_AES_128_GCM" ;;
+    aes-256-gcm) echo "AEAD_AES_256_GCM" ;;
+    chacha20-ietf-poly1305) echo "AEAD_CHACHA20_POLY1305" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+run_one() {
+  local impl="$1" config_file="$2" bind_ip="$3" bin nameserver port password method mode plugin plugin_opts
+  bin="${SS_BIN:-$(detect_bin "$impl")}"
+  [[ -n "$bin" && -x "$bin" ]] || { echo "找不到 $impl 服务端程序." >&2; exit 1; }
+
+  case "$impl" in
+    ss-libev)
+      exec "$bin" -c "$config_file" -b "$bind_ip"
+      ;;
+    ss-rust)
+      nameserver="$(json_get nameserver "$config_file")"
+      if [[ -n "$nameserver" ]]; then
+        exec "$bin" server -c "$config_file" --dns "$nameserver" -vvv
+      fi
+      exec "$bin" server -c "$config_file" -vvv
+      ;;
+    go-ss2)
+      port="$(json_get server_port "$config_file")"
+      password="$(json_get password "$config_file")"
+      method="$(go_ss2_method "$(json_get method "$config_file")")"
+      mode="$(json_get mode "$config_file")"
+      plugin="$(json_get plugin "$config_file")"
+      plugin_opts="$(json_get plugin_opts "$config_file")"
+      set -- -s "ss://${method}:${password}@${bind_ip}:${port}"
+      case "$mode" in
+        tcp_only) set -- "$@" -tcp ;;
+        udp_only) set -- "$@" -udp ;;
+        tcp_and_udp|"") set -- "$@" -tcp -udp ;;
+      esac
+      set -- "$@" -verbose
+      if [[ -n "$plugin" ]]; then
+        set -- "$@" -plugin "$plugin" -plugin-opts "$plugin_opts"
+      fi
+      exec "$bin" "$@"
+      ;;
+    *)
+      echo "不支持的 Shadowsocks 实现: $impl" >&2
+      exit 1
+      ;;
+  esac
 }
 
 json_make_config() {
@@ -329,18 +418,18 @@ get_public_ip() {
 }
 
 write_service() {
-  local index="$1" bind_ip="$2" public_ip="$3" config_file="$4"
+  local index="$1" bind_ip="$2" public_ip="$3" config_file="$4" impl="$5"
   local service_file="/etc/systemd/system/${SERVICE_PREFIX}${index}.service"
 
   cat > "$service_file" <<SERVICE
 [Unit]
-Description=Shadowsocks libev on ${public_ip}:${PORT}
+Description=Shadowsocks ${impl} on ${public_ip}:${PORT}
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=${SS_SERVER} -c ${config_file} -b ${bind_ip}
+ExecStart=$0 run-one ${impl} ${config_file} ${bind_ip}
 Restart=on-failure
 LimitNOFILE=51200
 
@@ -376,12 +465,20 @@ start_service() {
 }
 
 main() {
+  if [[ "${1:-}" == "run-one" ]]; then
+    shift
+    run_one "$@"
+  fi
+
   [[ $EUID -eq 0 ]] || { echo "请使用 root 运行." >&2; exit 1; }
   need_cmd ip
   need_cmd curl
   need_cmd python3
-  [[ -n "$SS_SERVER" && -x "$SS_SERVER" ]] || { echo "找不到 ss-server." >&2; exit 1; }
   [[ -f "$BASE_CONFIG" ]] || { echo "找不到基础配置: $BASE_CONFIG" >&2; exit 1; }
+
+  SERVER_IMPL="$(detect_impl)" || { echo "找不到可用的 ss-server/ssservice/go-shadowsocks2." >&2; exit 1; }
+  SERVER_BIN="${SS_BIN:-$(detect_bin "$SERVER_IMPL")}"
+  [[ -n "$SERVER_BIN" && -x "$SERVER_BIN" ]] || { echo "找不到 $SERVER_IMPL 服务端程序." >&2; exit 1; }
 
   mkdir -p "$CONFIG_DIR"
 
@@ -393,7 +490,8 @@ main() {
   cp -a "$BASE_CONFIG" "${BASE_CONFIG}.bak-$(date +%Y%m%d-%H%M%S)"
 
   echo "基础配置: $BASE_CONFIG"
-  echo "ss-server: $SS_SERVER"
+  echo "Shadowsocks 实现: $SERVER_IMPL"
+  echo "服务端程序: $SERVER_BIN"
   echo "端口: $PORT"
   echo "开始检测本机 IPv4 地址和公网出口..."
 
@@ -409,6 +507,8 @@ main() {
 
   systemctl stop shadowsocks-libev.service 2>/dev/null || true
   systemctl disable shadowsocks-libev.service 2>/dev/null || true
+  systemctl stop shadowsocks-rust.service go-shadowsocks2.service 2>/dev/null || true
+  systemctl disable shadowsocks-rust.service go-shadowsocks2.service 2>/dev/null || true
 
   local index=0 line iface bind_ip public_ip config_file seen_public=""
   for line in "${ADDRS[@]}"; do
@@ -431,7 +531,7 @@ main() {
     index=$((index + 1))
     config_file="$CONFIG_DIR/config-ip${index}.json"
     json_make_config "$BASE_CONFIG" "$config_file" "$bind_ip" "$PORT"
-    write_service "$index" "$bind_ip" "$public_ip" "$config_file"
+    write_service "$index" "$bind_ip" "$public_ip" "$config_file" "$SERVER_IMPL"
     echo "  添加: ${public_ip}:${PORT} -> 本地 ${bind_ip}，配置 ${config_file}"
   done
 

@@ -1,6 +1,8 @@
 # ss-multiip-installer
 
-单独仓库版：优先使用系统源快速安装 `shadowsocks-libev + simple-obfs`，你手动输入端口/密码/加密/插件参数；如果系统源不可用，可回退到原来的 `1660667086/123` 安装脚本。安装完成后，再自动按服务器多 IP 生成同端口节点。
+单独仓库版：自动按服务器多 IP 生成同端口 Shadowsocks 节点。支持原脚本安装出来的 `ss-libev`、`ss-rust`、`go-ss2`，并沿用 `/etc/shadowsocks/config.json` 里的加密、密码、插件和插件参数。
+
+如果服务器还没有任何 Shadowsocks 服务端，脚本会优先用系统源快速补齐 `shadowsocks-libev + simple-obfs`；如果系统源不可用，可显式回退到原来的 `1660667086/123` 安装脚本。
 
 默认配置：
 
@@ -33,10 +35,18 @@ sudo ./install-ss-multiip.sh
 sudo PORT=443 PASSWORD='your-password' METHOD='aes-256-gcm' ./install-ss-multiip.sh
 ```
 
-强制使用原安装脚本：
+显式使用原安装脚本：
 
 ```bash
-sudo FORCE_UPSTREAM=1 ./install-ss-multiip.sh
+sudo INSTALL_UPSTREAM=1 ./install-ss-multiip.sh
+```
+
+如果机器上同时残留多个 Shadowsocks 服务端，可以指定多 IP 使用哪一种：
+
+```bash
+sudo SS_IMPL=ss-libev ss-multiip
+sudo SS_IMPL=ss-rust ss-multiip
+sudo SS_IMPL=go-ss2 ss-multiip
 ```
 
 ## 后续新增 IP
@@ -61,12 +71,12 @@ sudo ss-multiip
 生成 /etc/shadowsocks/config-ipN.json
 生成 /etc/systemd/system/ss-ipN.service
 停掉旧 ss-ip*.service
-停掉原 shadowsocks-libev.service，避免占用 0.0.0.0:端口
+停掉原 shadowsocks-libev/shadowsocks-rust/go-shadowsocks2 服务，避免占用 0.0.0.0:端口
 启动新的多 IP 服务并设置开机自启
 ```
 
 ## 说明
 
-这个仓库不修改 `1660667086/123`。默认优先走系统源快速安装，避免源码编译拖慢小机器；如果选择不用快速安装，脚本会拉取并运行原安装脚本。已有 `/etc/shadowsocks/config.json` 时，脚本只改监听端口和绑定方式，保留原密码、加密方式和插件参数。
+这个仓库不修改 `1660667086/123`。默认优先沿用已经安装好的 Shadowsocks 版本；没有服务端时才走系统源快速安装，避免源码编译拖慢小机器。已有 `/etc/shadowsocks/config.json` 时，脚本只改监听端口和绑定方式，保留原密码、加密方式和插件参数；如果原配置没有插件，也不会强行加插件。
 
 脚本会预先设置非交互安装环境，并预配置 `iptables-persistent`，减少安装时卡在保存防火墙规则、`needrestart` 或未完成 `dpkg` 配置阶段的概率。
