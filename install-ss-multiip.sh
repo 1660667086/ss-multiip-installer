@@ -17,6 +17,7 @@ export DEBIAN_FRONTEND="${DEBIAN_FRONTEND:-noninteractive}"
 export APT_LISTCHANGES_FRONTEND="${APT_LISTCHANGES_FRONTEND:-none}"
 export NEEDRESTART_MODE="${NEEDRESTART_MODE:-a}"
 export NEEDRESTART_SUSPEND="${NEEDRESTART_SUSPEND:-1}"
+APT_LOCK_WAIT_SECONDS="${APT_LOCK_WAIT_SECONDS:-900}"
 
 need_root() {
   if [[ ${EUID} -ne 0 ]]; then
@@ -41,6 +42,23 @@ ensure_base_tools() {
 }
 
 prepare_noninteractive_apt() {
+  if [[ -d /etc/apt/apt.conf.d ]]; then
+    cat > /etc/apt/apt.conf.d/99ss-multiip-installer <<APTCONF
+DPkg::Lock::Timeout "${APT_LOCK_WAIT_SECONDS}";
+APT::Get::Assume-Yes "true";
+Dpkg::Options {
+  "--force-confdef";
+  "--force-confold";
+};
+APTCONF
+  fi
+
+  if has_cmd systemctl; then
+    systemctl stop apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
+  fi
+
+  wait_for_apt_locks
+
   if has_cmd debconf-set-selections; then
     printf 'iptables-persistent iptables-persistent/autosave_v4 boolean true\n' | debconf-set-selections || true
     printf 'iptables-persistent iptables-persistent/autosave_v6 boolean true\n' | debconf-set-selections || true
@@ -50,6 +68,33 @@ prepare_noninteractive_apt() {
     echo "检测到 dpkg 上次未配置完成，正在修复..."
     dpkg --configure -a
   fi
+}
+
+wait_for_apt_locks() {
+  local waited=0
+  local holders
+
+  while true; do
+    holders="$(fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null || true)"
+    if [[ -z "$holders" ]]; then
+      return
+    fi
+
+    if (( waited == 0 )); then
+      echo "检测到 apt/dpkg 正在被其他进程占用，等待释放锁..."
+      ps -fp $holders 2>/dev/null || true
+    fi
+
+    if (( waited >= APT_LOCK_WAIT_SECONDS )); then
+      echo "等待 apt/dpkg 锁超时。当前占用进程:"
+      ps -fp $holders 2>/dev/null || true
+      echo "请等系统自动更新结束后重新运行本脚本。不要手动删除 lock 文件。"
+      exit 1
+    fi
+
+    sleep 5
+    waited=$((waited + 5))
+  done
 }
 
 ensure_shadowsocks_tools() {
