@@ -459,6 +459,83 @@ get_public_ip() {
   return 1
 }
 
+b64_text() {
+  python3 - "$1" <<'PY'
+import base64
+import sys
+
+print(base64.b64encode(sys.argv[1].encode()).decode())
+PY
+}
+
+url_encode() {
+  python3 - "$1" <<'PY'
+import sys
+from urllib.parse import quote
+
+print(quote(sys.argv[1], safe=""))
+PY
+}
+
+client_plugin_name() {
+  local plugin_name
+  plugin_name="$(basename "$1")"
+  case "$plugin_name" in
+    obfs-server) echo "obfs-local" ;;
+    ck-server) echo "ck-client" ;;
+    gq-server) echo "gq-client" ;;
+    mtt-server) echo "mtt-client" ;;
+    *) echo "$plugin_name" ;;
+  esac
+}
+
+ss_link_for() {
+  local public_ip="$1" config_file="$2"
+  local method password port plugin plugin_opts userinfo link client_plugin plugin_query
+
+  method="$(json_get method "$config_file")"
+  password="$(json_get password "$config_file")"
+  port="$(json_get server_port "$config_file")"
+  plugin="$(json_get plugin "$config_file")"
+  plugin_opts="$(json_get plugin_opts "$config_file")"
+  userinfo="$(b64_text "${method}:${password}")"
+  link="ss://${userinfo}@${public_ip}:${port}"
+
+  if [[ -n "$plugin" ]]; then
+    client_plugin="$(client_plugin_name "$plugin")"
+    plugin_query="$client_plugin"
+    if [[ -n "$plugin_opts" ]]; then
+      plugin_query="${plugin_query};${plugin_opts}"
+    fi
+    link="${link}/?plugin=$(url_encode "$plugin_query")"
+  fi
+
+  echo "$link"
+}
+
+print_node_info() {
+  local index="$1" public_ip="$2" config_file="$3"
+  local method password port plugin plugin_opts
+
+  method="$(json_get method "$config_file")"
+  password="$(json_get password "$config_file")"
+  port="$(json_get server_port "$config_file")"
+  plugin="$(json_get plugin "$config_file")"
+  plugin_opts="$(json_get plugin_opts "$config_file")"
+
+  echo "节点 ${index}:"
+  echo " 地址     : ${public_ip}"
+  echo " 端口     : ${port}"
+  echo " 密码     : ${password}"
+  echo " 加密     : ${method}"
+  if [[ -n "$plugin" ]]; then
+    echo " 插件程序 : $(client_plugin_name "$plugin")"
+    echo " 插件选项 : ${plugin_opts}"
+  fi
+  echo " SS 链接  : $(ss_link_for "$public_ip" "$config_file")"
+  echo
+}
+
 write_service() {
   local index="$1" bind_ip="$2" public_ip="$3" config_file="$4" impl="$5"
   local service_file="/etc/systemd/system/${SERVICE_PREFIX}${index}.service"
@@ -553,6 +630,7 @@ main() {
   systemctl disable shadowsocks-rust.service go-shadowsocks2.service 2>/dev/null || true
 
   local index=0 line iface bind_ip public_ip config_file seen_public=""
+  local -a node_public_ips=() node_config_files=()
   for line in "${ADDRS[@]}"; do
     iface="${line%% *}"
     bind_ip="${line##* }"
@@ -574,6 +652,8 @@ main() {
     config_file="$CONFIG_DIR/config-ip${index}.json"
     json_make_config "$BASE_CONFIG" "$config_file" "$bind_ip" "$PORT"
     write_service "$index" "$bind_ip" "$public_ip" "$config_file" "$SERVER_IMPL"
+    node_public_ips+=("$public_ip")
+    node_config_files+=("$config_file")
     echo "  添加: ${public_ip}:${PORT} -> 本地 ${bind_ip}，配置 ${config_file}"
   done
 
@@ -591,6 +671,12 @@ main() {
   echo "完成，共创建 $index 个节点:"
   for n in $(seq 1 "$index"); do
     systemctl --no-pager --full status "${SERVICE_PREFIX}${n}.service" | sed -n '1,8p'
+  done
+
+  echo
+  echo "多 IP 配置信息:"
+  for n in $(seq 1 "$index"); do
+    print_node_info "$n" "${node_public_ips[$((n - 1))]}" "${node_config_files[$((n - 1))]}"
   done
 
   echo
