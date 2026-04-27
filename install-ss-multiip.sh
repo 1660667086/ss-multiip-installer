@@ -247,6 +247,32 @@ WantedBy=multi-user.target
 SERVICE
 }
 
+systemctl_retry() {
+  local attempt
+  for attempt in 1 2 3; do
+    if systemctl "$@"; then
+      return 0
+    fi
+
+    echo "systemctl $* 失败，尝试恢复 systemd 后重试 ($attempt/3)..."
+    systemctl daemon-reexec 2>/dev/null || true
+    sleep 3
+  done
+
+  echo "systemctl $* 最终失败." >&2
+  return 1
+}
+
+reload_systemd() {
+  systemctl_retry daemon-reload
+}
+
+start_service() {
+  local service="$1"
+  systemctl_retry enable "$service"
+  systemctl_retry restart "$service"
+}
+
 main() {
   [[ $EUID -eq 0 ]] || { echo "请使用 root 运行." >&2; exit 1; }
   need_cmd ip
@@ -279,10 +305,8 @@ main() {
   systemctl disable "${SERVICE_PREFIX}"'*.service' 2>/dev/null || true
   rm -f /etc/systemd/system/${SERVICE_PREFIX}[0-9]*.service
 
-  if systemctl list-unit-files | grep -q '^shadowsocks-libev.service'; then
-    systemctl stop shadowsocks-libev.service 2>/dev/null || true
-    systemctl disable shadowsocks-libev.service 2>/dev/null || true
-  fi
+  systemctl stop shadowsocks-libev.service 2>/dev/null || true
+  systemctl disable shadowsocks-libev.service 2>/dev/null || true
 
   local index=0 line iface bind_ip public_ip config_file seen_public=""
   for line in "${ADDRS[@]}"; do
@@ -314,9 +338,9 @@ main() {
     exit 1
   fi
 
-  systemctl daemon-reload
+  reload_systemd
   for n in $(seq 1 "$index"); do
-    systemctl enable --now "${SERVICE_PREFIX}${n}.service"
+    start_service "${SERVICE_PREFIX}${n}.service"
   done
 
   echo
