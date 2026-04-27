@@ -19,6 +19,7 @@ export APT_LISTCHANGES_FRONTEND="${APT_LISTCHANGES_FRONTEND:-none}"
 export NEEDRESTART_MODE="${NEEDRESTART_MODE:-a}"
 export NEEDRESTART_SUSPEND="${NEEDRESTART_SUSPEND:-1}"
 APT_LOCK_WAIT_SECONDS="${APT_LOCK_WAIT_SECONDS:-900}"
+SYSTEMCTL_TIMEOUT_SECONDS="${SYSTEMCTL_TIMEOUT_SECONDS:-10}"
 
 need_root() {
   if [[ ${EUID} -ne 0 ]]; then
@@ -63,8 +64,8 @@ prompt_value() {
 
 fast_packages_available() {
   has_cmd apt-cache || return 1
-  apt-cache policy shadowsocks-libev 2>/dev/null | grep -q 'Candidate: [^(]' || return 1
-  apt-cache policy simple-obfs 2>/dev/null | grep -q 'Candidate: [^(]' || return 1
+  apt-cache policy shadowsocks-libev 2>/dev/null | awk '$1 == "Candidate:" { found=1; ok=($2 != "(none)") } END { exit !(found && ok) }' || return 1
+  apt-cache policy simple-obfs 2>/dev/null | awk '$1 == "Candidate:" { found=1; ok=($2 != "(none)") } END { exit !(found && ok) }' || return 1
 }
 
 fast_install_shadowsocks() {
@@ -83,8 +84,17 @@ fast_install_shadowsocks() {
   prompt_value PASSWORD "请输入密码" "$PASSWORD"
   prompt_value METHOD "请输入加密方式" "$METHOD"
 
-  PLUGIN="obfs-server"
+  PLUGIN="$(command -v obfs-server || echo obfs-server)"
   prompt_value PLUGIN_OPTS "请输入服务端插件参数" "$PLUGIN_OPTS"
+}
+
+systemctl_best_effort() {
+  has_cmd systemctl || return 0
+  if has_cmd timeout; then
+    timeout "${SYSTEMCTL_TIMEOUT_SECONDS}" systemctl "$@" 2>/dev/null || true
+  else
+    systemctl "$@" 2>/dev/null || true
+  fi
 }
 
 prepare_noninteractive_apt() {
@@ -100,9 +110,8 @@ Dpkg::Options {
 APTCONF
   fi
 
-  if has_cmd systemctl; then
-    systemctl stop apt-daily.service apt-daily-upgrade.service 2>/dev/null || true
-  fi
+  systemctl_best_effort stop apt-daily.service apt-daily-upgrade.service
+  systemctl_best_effort stop apt-daily.timer apt-daily-upgrade.timer
 
   wait_for_apt_locks
 
